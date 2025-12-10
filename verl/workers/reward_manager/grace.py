@@ -120,55 +120,50 @@ class HiddenRewardManager:
             return 0
 
         print("Calculating system prompt token length for pooling mask...")
+        print(f"Using next token prediction format: PROMPT2 + '\\n' + text + '\\n' + '<|endoftext|>'")
 
         try:
-
+            # New format: PROMPT2 + "\n" + text + "\n" + "<|endoftext|>"
+            # System prompt is PROMPT2 + "\n"
+            # Method 1: Direct calculation (more reliable)
+            system_prompt_str = f"{self.custom_prompt}\n"
+            system_prompt_tokens = self.tokenizer.encode(
+                system_prompt_str, add_special_tokens=False
+            )
+            direct_length = len(system_prompt_tokens)
+            
+            # Method 2: Find by searching for user content (for verification)
             dummy_user_content = "some_unique_string_for_testing_user_content"
-
-            messages = [
-                {"role": "system", "content": self.custom_prompt},
-                {"role": "user", "content": dummy_user_content},
-            ]
-
-            try:
-                if (
-                    hasattr(self.tokenizer, "chat_template")
-                    and self.tokenizer.chat_template is not None
-                ):
-                    full_prompt_str = self.tokenizer.apply_chat_template(
-                        messages, add_generation_prompt=True, tokenize=False
-                    )
-                else:
-
-                    full_prompt_str = (
-                        f"{self.custom_prompt}\n\n{dummy_user_content}\n\nAssistant:"
-                    )
-            except Exception as e:
-
-                full_prompt_str = (
-                    f"{self.custom_prompt}\n\n{dummy_user_content}\n\nAssistant:"
-                )
-
+            full_prompt_str = f"{self.custom_prompt}\n{dummy_user_content}\n<|endoftext|>"
             full_tokens = self.tokenizer.encode(
                 full_prompt_str, add_special_tokens=False
             )
-
             user_content_tokens = self.tokenizer.encode(
                 dummy_user_content, add_special_tokens=False
             )
-
             user_content_start_index = self._find_subsequence(
                 full_tokens, user_content_tokens
             )
-
-            if user_content_start_index == -1:
-
-                self._system_prompt_token_length_val = 0
-            else:
-
-                self._system_prompt_token_length_val = user_content_start_index
+            
+            if user_content_start_index != -1 and user_content_start_index == direct_length:
+                # Both methods agree
+                self._system_prompt_token_length_val = direct_length
                 print(
                     f"✓ System prompt prefix length determined: {self._system_prompt_token_length_val} tokens. "
+                    "These will be excluded from pooling."
+                )
+            elif user_content_start_index != -1:
+                # Methods disagree, use the search result (more accurate)
+                self._system_prompt_token_length_val = user_content_start_index
+                print(
+                    f"⚠ System prompt length mismatch: direct={direct_length}, search={user_content_start_index}. "
+                    f"Using search result: {self._system_prompt_token_length_val} tokens."
+                )
+            else:
+                # Fallback to direct calculation
+                self._system_prompt_token_length_val = direct_length
+                print(
+                    f"✓ System prompt prefix length determined (fallback): {self._system_prompt_token_length_val} tokens. "
                     "These will be excluded from pooling."
                 )
 
@@ -212,7 +207,9 @@ class HiddenRewardManager:
                         if (
                             system_prompt_end_pos <= valid_end_pos + 1
                         ):  # +1 because end_pos is inclusive
-
+                            # Mask out system prompt part (PROMPT2 + "\n")
+                            # Note: With left_pad=True, valid tokens are on the right side
+                            # valid_start_pos is the first valid token (start of system prompt)
                             pooling_mask[k, valid_start_pos:system_prompt_end_pos] = 0
                         else:
 
