@@ -622,6 +622,25 @@ class HiddenRewardManager:
 
             print("Warning: Could not find EOS token ID, using default value 2")
             return 2
+    
+    def _get_eot_token_id(self):
+        """
+        Get the token ID for <|endoftext|>.
+        Note: In qwen3, <|endoftext|> is pad_token, not eos_token.
+        """
+        # First try pad_token_id (for qwen3)
+        if (
+            hasattr(self.tokenizer, "pad_token_id")
+            and self.tokenizer.pad_token_id is not None
+        ):
+            return self.tokenizer.pad_token_id
+        # Fallback: try to convert <|endoftext|> string
+        elif hasattr(self.tokenizer, "convert_tokens_to_ids"):
+            try:
+                return self.tokenizer.convert_tokens_to_ids("<|endoftext|>")
+            except:
+                pass
+        return None
 
     def normalize_rewards(self, rewards, method="z_score"):
         if method == "z_score":
@@ -654,6 +673,7 @@ class HiddenRewardManager:
             valid_prompt_length = data_item.batch["attention_mask"][
                 :prompt_length
             ].sum()
+            # With left_pad=True, valid tokens are on the right side
             valid_prompt_ids = prompt_ids[-valid_prompt_length:]
 
             response_ids = data_item.batch["responses"]
@@ -677,6 +697,7 @@ class HiddenRewardManager:
                 valid_query_length = data_item.batch["query_attention_mask"][
                     :query_length
                 ].sum()
+                # With left_pad=True, valid tokens are on the right side
                 valid_query_ids = query_ids[-valid_query_length:]
             else:
                 valid_query_ids = None
@@ -685,6 +706,7 @@ class HiddenRewardManager:
                 valid_negative_doc_length = data_item.batch[
                     "negative_doc_attention_mask"
                 ][:negative_doc_length].sum()
+                # With left_pad=True, valid tokens are on the right side
                 valid_negative_doc_ids = negative_doc_ids[-valid_negative_doc_length:]
             else:
                 valid_negative_doc_ids = None
@@ -700,14 +722,15 @@ class HiddenRewardManager:
             else:
                 valid_negative_doc_response_ids = None
 
+            # Decode with special tokens to see <|endoftext|>
             prompt_str = self.tokenizer.decode(
-                valid_prompt_ids, skip_special_tokens=True
+                valid_prompt_ids, skip_special_tokens=False
             )
             response_str = self.tokenizer.decode(
                 valid_response_ids, skip_special_tokens=True
             )
             query_prompt_str = (
-                self.tokenizer.decode(valid_query_ids, skip_special_tokens=True)
+                self.tokenizer.decode(valid_query_ids, skip_special_tokens=False)
                 if valid_query_ids is not None
                 else ""
             )
@@ -719,7 +742,7 @@ class HiddenRewardManager:
                 else ""
             )
             negative_doc_prompt_str = (
-                self.tokenizer.decode(valid_negative_doc_ids, skip_special_tokens=True)
+                self.tokenizer.decode(valid_negative_doc_ids, skip_special_tokens=False)
                 if valid_negative_doc_ids is not None
                 else ""
             )
@@ -730,6 +753,26 @@ class HiddenRewardManager:
                 if valid_negative_doc_response_ids is not None
                 else ""
             )
+            
+            # Check for <|endoftext|> in prompts
+            # Note: In qwen3, <|endoftext|> is pad_token, not eos_token
+            eot_token_id = self._get_eot_token_id()
+            
+            prompt_has_eot = "<|endoftext|>" in prompt_str
+            if eot_token_id is not None and len(valid_prompt_ids) > 0:
+                prompt_has_eot = prompt_has_eot or (valid_prompt_ids[-1].item() == eot_token_id)
+            
+            query_has_eot = False
+            if query_prompt_str:
+                query_has_eot = "<|endoftext|>" in query_prompt_str
+                if eot_token_id is not None and len(valid_query_ids) > 0:
+                    query_has_eot = query_has_eot or (valid_query_ids[-1].item() == eot_token_id)
+            
+            neg_doc_has_eot = False
+            if negative_doc_prompt_str:
+                neg_doc_has_eot = "<|endoftext|>" in negative_doc_prompt_str
+                if eot_token_id is not None and len(valid_negative_doc_ids) > 0:
+                    neg_doc_has_eot = neg_doc_has_eot or (valid_negative_doc_ids[-1].item() == eot_token_id)
 
             data_source = data_item.non_tensor_batch[self.reward_fn_key]
 
@@ -743,6 +786,12 @@ class HiddenRewardManager:
                     "response_str": response_str,
                     "negative_doc_prompt_str": negative_doc_prompt_str,
                     "negative_doc_response_str": negative_doc_response_str,
+                    "prompt_has_eot": prompt_has_eot,
+                    "query_has_eot": query_has_eot,
+                    "neg_doc_has_eot": neg_doc_has_eot,
+                    "prompt_length": len(valid_prompt_ids),
+                    "query_length": len(valid_query_ids) if valid_query_ids is not None else 0,
+                    "neg_doc_length": len(valid_negative_doc_ids) if valid_negative_doc_ids is not None else 0,
                 }
             )
 
@@ -977,11 +1026,17 @@ class HiddenRewardManager:
                 print(f"=== Iteration {self.iteration_counter} - Sample {i} ===")
                 print(f"[Group: {group_ids[i] if group_ids else 'N/A'}]")
                 print(f"[Data Source: {info['data_source']}]")
+                print(f"[Query Prompt Length: {info['query_length']} tokens]")
+                print(f"[Query Prompt Has <|endoftext|>: {info['query_has_eot']}]")
                 print(f"[Query Prompt]: {info['query_prompt_str']}")
                 print(f"[Query Response]: {info['query_response_str']}")
+                print(f"[Positive Doc Prompt Length: {info['prompt_length']} tokens]")
+                print(f"[Positive Doc Prompt Has <|endoftext|>: {info['prompt_has_eot']}]")
                 print(f"[Positive Doc Prompt]: {info['prompt_str']}")
                 print(f"[Positive Doc Response]: {info['response_str']}")
                 if neg_hidden_states is not None:
+                    print(f"[Negative Doc Prompt Length: {info['neg_doc_length']} tokens]")
+                    print(f"[Negative Doc Prompt Has <|endoftext|>: {info['neg_doc_has_eot']}]")
                     print(f"[Negative Doc Prompt]: {info['negative_doc_prompt_str']}")
                     print(
                         f"[Negative Doc Response]: {info['negative_doc_response_str']}"
