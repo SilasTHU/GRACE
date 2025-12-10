@@ -267,143 +267,6 @@ class RLHFDataset(Dataset):
             },
             {"role": "user", "content": f"{text}"},
         ]
-    
-    def build_next_token_prediction_prompt(self, text):
-        """
-        Build next token prediction format prompt.
-        Format: PROMPT2 + "\n" + text + "\n" + "<|endoftext|>"
-        Note: In qwen3, <|endoftext|> is pad_token, not eos_token.
-        """
-        prompt_template = f"{PROMPT2}\n{text}\n<|endoftext|>"
-        return prompt_template
-    
-    def get_eot_token_id(self, tokenizer):
-        """
-        Get the token ID for <|endoftext|>.
-        In qwen3, <|endoftext|> is pad_token, not eos_token.
-        """
-        # First try pad_token_id (for qwen3)
-        if hasattr(tokenizer, "pad_token_id") and tokenizer.pad_token_id is not None:
-            return tokenizer.pad_token_id
-        # Fallback: try to convert <|endoftext|> string
-        elif hasattr(tokenizer, "convert_tokens_to_ids"):
-            try:
-                return tokenizer.convert_tokens_to_ids("<|endoftext|>")
-            except:
-                pass
-        return None
-    
-    def extract_text_from_messages(self, messages):
-        """
-        Extract text content from messages for next token prediction format.
-        Assumes messages is a list of dicts with 'role' and 'content' keys.
-        For multimodal content, extracts text parts only.
-        """
-        text_parts = []
-        for msg in messages:
-            content = msg.get("content", "")
-            if isinstance(content, list):
-                # Multimodal content: extract text parts
-                for item in content:
-                    if isinstance(item, dict) and item.get("type") == "text":
-                        text_parts.append(item.get("text", ""))
-            elif isinstance(content, str):
-                text_parts.append(content)
-        # Join all text parts, typically user content is what we want
-        # For simplicity, we'll use the last non-system message's content
-        user_content = ""
-        for msg in messages:
-            if msg.get("role") == "user":
-                content = msg.get("content", "")
-                if isinstance(content, list):
-                    user_content = " ".join([
-                        item.get("text", "") for item in content 
-                        if isinstance(item, dict) and item.get("type") == "text"
-                    ])
-                elif isinstance(content, str):
-                    user_content = content
-                break
-        return user_content
-    
-    def truncate_with_eot_preserved(self, token_ids, max_length, tokenizer, truncation="right"):
-        """
-        Truncate token_ids while preserving <|endoftext|> token at the end.
-        Only truncates the content part (query/positive/negative text), keeping prefix and <|endoftext|>.
-        Note: In qwen3, <|endoftext|> is pad_token, not eos_token.
-        """
-        eot_token_id = self.get_eot_token_id(tokenizer)
-        
-        if eot_token_id is None:
-            # No EOT token found, use standard truncation
-            if truncation == "left":
-                return token_ids[-max_length:]
-            elif truncation == "right":
-                return token_ids[:max_length]
-            elif truncation == "middle":
-                left_half = max_length // 2
-                right_half = max_length - left_half
-                return token_ids[:left_half] + token_ids[-right_half:]
-            else:
-                return token_ids
-        
-        if len(token_ids) <= max_length:
-            # No truncation needed, but ensure EOT is at the end
-            if len(token_ids) == 0 or token_ids[-1] != eot_token_id:
-                # Add EOT if not present, but check if we have space
-                if len(token_ids) < max_length:
-                    return token_ids + [eot_token_id]
-                else:
-                    # Replace last token with EOT
-                    return token_ids[:-1] + [eot_token_id]
-            return token_ids
-        
-        # Check if EOT token exists at the end
-        has_eot_at_end = len(token_ids) > 0 and token_ids[-1] == eot_token_id
-        
-        if has_eot_at_end:
-            # Preserve EOT token, truncate content from the right
-            # Structure: [prefix_tokens (PROMPT2 + \n)] + [content_tokens (text)] + [\n] + [eot_token]
-            # We truncate only the content part (text), keeping prefix and EOT
-            
-            # Reserve space for EOT token
-            available_length = max_length - 1
-            
-            if truncation == "right":
-                # Keep prefix and EOT, truncate content from right
-                # Keep first (available_length) tokens + EOT
-                truncated = token_ids[:available_length] + [eot_token_id]
-                return truncated
-            elif truncation == "left":
-                # Keep EOT, truncate from left (but this might remove prefix)
-                # Keep last (available_length) tokens + EOT
-                truncated = token_ids[-(available_length):-1] + [eot_token_id]
-                return truncated
-            elif truncation == "middle":
-                # Keep prefix start, EOT, and truncate middle content
-                # Estimate prefix length (PROMPT2 + \n, roughly 30-50 tokens)
-                prefix_estimate = min(50, len(token_ids) // 4)  # Rough estimate
-                left_half = (available_length - prefix_estimate) // 2 + prefix_estimate
-                right_half = available_length - left_half
-                if right_half > 0:
-                    truncated = token_ids[:left_half] + token_ids[-right_half-1:-1] + [eot_token_id]
-                else:
-                    truncated = token_ids[:available_length] + [eot_token_id]
-                return truncated
-            else:
-                return token_ids
-        else:
-            # No EOT at end, add it and truncate if needed
-            if truncation == "right":
-                truncated = token_ids[:max_length-1] + [eot_token_id]
-            elif truncation == "left":
-                truncated = token_ids[-(max_length-1):] + [eot_token_id]
-            elif truncation == "middle":
-                left_half = (max_length - 1) // 2
-                right_half = max_length - 1 - left_half
-                truncated = token_ids[:left_half] + token_ids[-right_half:] + [eot_token_id]
-            else:
-                truncated = token_ids + [eot_token_id] if len(token_ids) < max_length else token_ids
-            return truncated
 
     def convert_to_messages_with_instruction(self, text, instruction_type):
         DEFAULT_RETRIEVAL_INSTRUCTION = RETRIEVAL_INSTRUCTIONS["general"]
@@ -473,36 +336,29 @@ class RLHFDataset(Dataset):
             row_dict["multi_modal_inputs"].pop("second_per_grid_ts", None)
 
         else:
-            # Extract text from messages for next token prediction format
-            main_text = self.extract_text_from_messages(messages)
-            raw_prompt = self.build_next_token_prediction_prompt(main_text)
+            raw_prompt = self.tokenizer.apply_chat_template(
+                messages, add_generation_prompt=True, tokenize=False
+            )
             model_inputs = self.tokenizer(
                 raw_prompt, return_tensors="pt", add_special_tokens=False
             )
             input_ids = model_inputs.pop("input_ids")
             attention_mask = model_inputs.pop("attention_mask")
-            
-            # Truncate while preserving <|endoftext|>
-            if input_ids.shape[1] > self.max_prompt_length:
-                truncated_ids = self.truncate_with_eot_preserved(
-                    input_ids[0].tolist(), 
-                    self.max_prompt_length, 
-                    self.tokenizer, 
-                    self.truncation
-                )
-                input_ids = torch.tensor([truncated_ids], dtype=input_ids.dtype)
-                # Generate attention_mask: all tokens are valid (1), including <|endoftext|> at the end
-                # Note: In qwen3, <|endoftext|> is pad_token, but we want to keep it unmasked
-                attention_mask = torch.ones_like(input_ids, dtype=torch.long)
-            
             if self.train_mode == "supervised":
 
                 query = row_dict["multi_input"]["query"]
                 negative_doc = row_dict["multi_input"]["negative_document"]
 
-                # Build next token prediction format prompts
-                query_raw_prompt = self.build_next_token_prediction_prompt(query)
-                negative_doc_raw_prompt = self.build_next_token_prediction_prompt(negative_doc)
+                # verl_0713
+                query_messages = self.convert_to_messages(query)
+                negative_doc_messages = self.convert_to_messages(negative_doc)
+
+                query_raw_prompt = self.tokenizer.apply_chat_template(
+                    query_messages, add_generation_prompt=True, tokenize=False
+                )
+                negative_doc_raw_prompt = self.tokenizer.apply_chat_template(
+                    negative_doc_messages, add_generation_prompt=True, tokenize=False
+                )
 
                 query_inputs = self.tokenizer(
                     query_raw_prompt, return_tensors="pt", add_special_tokens=False
@@ -517,29 +373,6 @@ class RLHFDataset(Dataset):
                 query_attention_mask = query_inputs.pop("attention_mask")
                 negative_doc_input_ids = negative_doc_inputs.pop("input_ids")
                 negative_doc_attention_mask = negative_doc_inputs.pop("attention_mask")
-                
-                # Truncate query and negative_doc while preserving <|endoftext|>
-                if query_input_ids.shape[1] > self.max_prompt_length:
-                    truncated_query_ids = self.truncate_with_eot_preserved(
-                        query_input_ids[0].tolist(),
-                        self.max_prompt_length,
-                        self.tokenizer,
-                        self.truncation
-                    )
-                    query_input_ids = torch.tensor([truncated_query_ids], dtype=query_input_ids.dtype)
-                    # Generate attention_mask: all tokens are valid (1), including <|endoftext|> at the end
-                    query_attention_mask = torch.ones_like(query_input_ids, dtype=torch.long)
-                
-                if negative_doc_input_ids.shape[1] > self.max_prompt_length:
-                    truncated_neg_ids = self.truncate_with_eot_preserved(
-                        negative_doc_input_ids[0].tolist(),
-                        self.max_prompt_length,
-                        self.tokenizer,
-                        self.truncation
-                    )
-                    negative_doc_input_ids = torch.tensor([truncated_neg_ids], dtype=negative_doc_input_ids.dtype)
-                    # Generate attention_mask: all tokens are valid (1), including <|endoftext|> at the end
-                    negative_doc_attention_mask = torch.ones_like(negative_doc_input_ids, dtype=torch.long)
             else:
                 query_input_ids = None
                 query_attention_mask = None
@@ -624,22 +457,65 @@ class RLHFDataset(Dataset):
                 negative_doc_raw_prompt, add_special_tokens=False
             )
 
-        # Truncate while preserving <|endoftext|>
         if len(raw_prompt_ids) > self.max_prompt_length:
-            raw_prompt_ids = self.truncate_with_eot_preserved(
-                raw_prompt_ids, self.max_prompt_length, self.tokenizer, self.truncation
-            )
-
-        # Also process query and negative_doc raw_prompt_ids
-        if self.train_mode == "supervised":
-            if len(query_raw_prompt_ids) > self.max_prompt_length:
-                query_raw_prompt_ids = self.truncate_with_eot_preserved(
-                    query_raw_prompt_ids, self.max_prompt_length, self.tokenizer, self.truncation
+            if self.truncation == "left":
+                raw_prompt_ids = raw_prompt_ids[-self.max_prompt_length :]
+            elif self.truncation == "right":
+                raw_prompt_ids = raw_prompt_ids[: self.max_prompt_length]
+            elif self.truncation == "middle":
+                left_half = self.max_prompt_length // 2
+                right_half = self.max_prompt_length - left_half
+                raw_prompt_ids = (
+                    raw_prompt_ids[:left_half] + raw_prompt_ids[-right_half:]
+                )
+            elif self.truncation == "error":
+                raise RuntimeError(
+                    f"Prompt length {len(raw_prompt_ids)} is longer than {self.max_prompt_length}."
                 )
 
-            if len(negative_doc_raw_prompt_ids) > self.max_prompt_length:
-                negative_doc_raw_prompt_ids = self.truncate_with_eot_preserved(
-                    negative_doc_raw_prompt_ids, self.max_prompt_length, self.tokenizer, self.truncation
+        # Also process query and negative_doc raw_prompt_ids
+        if (
+            self.train_mode == "supervised"
+            and len(query_raw_prompt_ids) > self.max_prompt_length
+        ):
+            if self.truncation == "left":
+                query_raw_prompt_ids = query_raw_prompt_ids[-self.max_prompt_length :]
+            elif self.truncation == "right":
+                query_raw_prompt_ids = query_raw_prompt_ids[: self.max_prompt_length]
+            elif self.truncation == "middle":
+                left_half = self.max_prompt_length // 2
+                right_half = self.max_prompt_length - left_half
+                query_raw_prompt_ids = (
+                    query_raw_prompt_ids[:left_half]
+                    + query_raw_prompt_ids[-right_half:]
+                )
+            elif self.truncation == "error":
+                raise RuntimeError(
+                    f"Query prompt length {len(query_raw_prompt_ids)} is longer than {self.max_prompt_length}."
+                )
+
+        if (
+            self.train_mode == "supervised"
+            and len(negative_doc_raw_prompt_ids) > self.max_prompt_length
+        ):
+            if self.truncation == "left":
+                negative_doc_raw_prompt_ids = negative_doc_raw_prompt_ids[
+                    -self.max_prompt_length :
+                ]
+            elif self.truncation == "right":
+                negative_doc_raw_prompt_ids = negative_doc_raw_prompt_ids[
+                    : self.max_prompt_length
+                ]
+            elif self.truncation == "middle":
+                left_half = self.max_prompt_length // 2
+                right_half = self.max_prompt_length - left_half
+                negative_doc_raw_prompt_ids = (
+                    negative_doc_raw_prompt_ids[:left_half]
+                    + negative_doc_raw_prompt_ids[-right_half:]
+                )
+            elif self.truncation == "error":
+                raise RuntimeError(
+                    f"Negative doc prompt length {len(negative_doc_raw_prompt_ids)} is longer than {self.max_prompt_length}."
                 )
 
         row_dict["raw_prompt_ids"] = raw_prompt_ids
