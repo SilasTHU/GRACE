@@ -83,11 +83,11 @@ class HiddenRewardManager:
 
         if self.exclude_system_prompt:
             print(
-                f"HiddenRewardManager initialized with system prompt exclusion enabled"
+                f"[GRACE] HiddenRewardManager initialized with system prompt exclusion enabled (exclude_system_prompt=True)"
             )
         else:
             print(
-                f"HiddenRewardManager initialized with system prompt exclusion disabled"
+                f"[GRACE] HiddenRewardManager initialized with system prompt exclusion disabled (exclude_system_prompt=False)"
             )
 
         if self.enable_clustering:
@@ -119,9 +119,9 @@ class HiddenRewardManager:
             self._system_prompt_token_length_val = 0
             return 0
 
-        print("Calculating system prompt token length for pooling mask...")
-        print(f"Prompt format: PROMPT2 + '\\n' + text + '\\n' + '<|endoftext|>'")
-        print(f"System prompt to mask: PROMPT2 + '\\n' (only this part will be excluded from pooling)")
+        print("[GRACE] Calculating system prompt token length for pooling mask...")
+        print(f"[GRACE] Prompt format: PROMPT2 + '\\n' + text + '\\n' + '<|endoftext|>'")
+        print(f"[GRACE] System prompt to mask: PROMPT2 + '\\n' (only this part will be excluded from pooling)")
 
         try:
             # New format: PROMPT2 + "\n" + text + "\n" + "<|endoftext|>"
@@ -153,7 +153,7 @@ class HiddenRewardManager:
                 # Both methods agree - perfect!
                 self._system_prompt_token_length_val = direct_length
                 print(
-                    f"✓ System prompt (PROMPT2 + '\\n') length: {self._system_prompt_token_length_val} tokens. "
+                    f"[GRACE] ✓ System prompt (PROMPT2 + '\\n') length: {self._system_prompt_token_length_val} tokens. "
                     "This part will be excluded from pooling."
                 )
             elif user_content_start_index != -1:
@@ -161,19 +161,19 @@ class HiddenRewardManager:
                 # This might happen if tokenization of "\n" behaves differently in context
                 self._system_prompt_token_length_val = user_content_start_index
                 print(
-                    f"⚠ Length mismatch: direct={direct_length}, search={user_content_start_index}. "
+                    f"[GRACE] ⚠ Length mismatch: direct={direct_length}, search={user_content_start_index}. "
                     f"Using search result: {self._system_prompt_token_length_val} tokens."
                 )
             else:
                 # Fallback to direct calculation if search fails
                 self._system_prompt_token_length_val = direct_length
                 print(
-                    f"✓ System prompt (PROMPT2 + '\\n') length (fallback): {self._system_prompt_token_length_val} tokens. "
+                    f"[GRACE] ✓ System prompt (PROMPT2 + '\\n') length (fallback): {self._system_prompt_token_length_val} tokens. "
                     "This part will be excluded from pooling."
                 )
 
         except Exception as e:
-            print(f"Error calculating system prompt length: {e}. Defaulting to 0.")
+            print(f"[GRACE] Error calculating system prompt length: {e}. Defaulting to 0.")
             self._system_prompt_token_length_val = 0
 
         return self._system_prompt_token_length_val
@@ -236,7 +236,7 @@ class HiddenRewardManager:
                             remaining_for_pooling = total_valid - system_prompt_len
                             if k == 0:  # Only print for first item to avoid spam
                                 print(
-                                    f"  Sample 0: Masked {system_prompt_len} tokens (PROMPT2 + '\\n'), "
+                                    f"[GRACE] Sample 0: Masked {system_prompt_len} tokens (PROMPT2 + '\\n'), "
                                     f"{remaining_for_pooling} tokens (text + '\\n' + '<|endoftext|>') will participate in pooling"
                                 )
                         else:
@@ -1079,7 +1079,7 @@ class HiddenRewardManager:
                 print(f"[Cross Group Weight]: {self.cross_group_weight}")
                 if self.exclude_system_prompt:
                     print(
-                        f"[System Prompt Excluded]: {self._get_system_prompt_token_length()} tokens"
+                        f"[GRACE] [System Prompt Excluded]: {self._get_system_prompt_token_length()} tokens"
                     )
                 if self.enable_length_penalty:
                     print(
