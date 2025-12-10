@@ -622,6 +622,25 @@ class HiddenRewardManager:
 
             print("Warning: Could not find EOS token ID, using default value 2")
             return 2
+    
+    def _get_eot_token_id(self):
+        """
+        Get the token ID for <|endoftext|>.
+        Note: In qwen3, <|endoftext|> is pad_token, not eos_token.
+        """
+        # First try pad_token_id (for qwen3)
+        if (
+            hasattr(self.tokenizer, "pad_token_id")
+            and self.tokenizer.pad_token_id is not None
+        ):
+            return self.tokenizer.pad_token_id
+        # Fallback: try to convert <|endoftext|> string
+        elif hasattr(self.tokenizer, "convert_tokens_to_ids"):
+            try:
+                return self.tokenizer.convert_tokens_to_ids("<|endoftext|>")
+            except:
+                pass
+        return None
 
     def normalize_rewards(self, rewards, method="z_score"):
         if method == "z_score":
@@ -736,14 +755,24 @@ class HiddenRewardManager:
             )
             
             # Check for <|endoftext|> in prompts
-            prompt_has_eot = "<|endoftext|>" in prompt_str or (hasattr(self.tokenizer, "eos_token_id") and 
-                len(valid_prompt_ids) > 0 and valid_prompt_ids[-1].item() == self.tokenizer.eos_token_id)
-            query_has_eot = query_prompt_str and ("<|endoftext|>" in query_prompt_str or 
-                (hasattr(self.tokenizer, "eos_token_id") and len(valid_query_ids) > 0 and 
-                 valid_query_ids[-1].item() == self.tokenizer.eos_token_id))
-            neg_doc_has_eot = negative_doc_prompt_str and ("<|endoftext|>" in negative_doc_prompt_str or 
-                (hasattr(self.tokenizer, "eos_token_id") and len(valid_negative_doc_ids) > 0 and 
-                 valid_negative_doc_ids[-1].item() == self.tokenizer.eos_token_id))
+            # Note: In qwen3, <|endoftext|> is pad_token, not eos_token
+            eot_token_id = self._get_eot_token_id()
+            
+            prompt_has_eot = "<|endoftext|>" in prompt_str
+            if eot_token_id is not None and len(valid_prompt_ids) > 0:
+                prompt_has_eot = prompt_has_eot or (valid_prompt_ids[-1].item() == eot_token_id)
+            
+            query_has_eot = False
+            if query_prompt_str:
+                query_has_eot = "<|endoftext|>" in query_prompt_str
+                if eot_token_id is not None and len(valid_query_ids) > 0:
+                    query_has_eot = query_has_eot or (valid_query_ids[-1].item() == eot_token_id)
+            
+            neg_doc_has_eot = False
+            if negative_doc_prompt_str:
+                neg_doc_has_eot = "<|endoftext|>" in negative_doc_prompt_str
+                if eot_token_id is not None and len(valid_negative_doc_ids) > 0:
+                    neg_doc_has_eot = neg_doc_has_eot or (valid_negative_doc_ids[-1].item() == eot_token_id)
 
             data_source = data_item.non_tensor_batch[self.reward_fn_key]
 

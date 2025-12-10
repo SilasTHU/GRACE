@@ -272,9 +272,26 @@ class RLHFDataset(Dataset):
         """
         Build next token prediction format prompt.
         Format: PROMPT2 + "\n" + text + "\n" + "<|endoftext|>"
+        Note: In qwen3, <|endoftext|> is pad_token, not eos_token.
         """
         prompt_template = f"{PROMPT2}\n{text}\n<|endoftext|>"
         return prompt_template
+    
+    def get_eot_token_id(self, tokenizer):
+        """
+        Get the token ID for <|endoftext|>.
+        In qwen3, <|endoftext|> is pad_token, not eos_token.
+        """
+        # First try pad_token_id (for qwen3)
+        if hasattr(tokenizer, "pad_token_id") and tokenizer.pad_token_id is not None:
+            return tokenizer.pad_token_id
+        # Fallback: try to convert <|endoftext|> string
+        elif hasattr(tokenizer, "convert_tokens_to_ids"):
+            try:
+                return tokenizer.convert_tokens_to_ids("<|endoftext|>")
+            except:
+                pass
+        return None
     
     def extract_text_from_messages(self, messages):
         """
@@ -312,16 +329,9 @@ class RLHFDataset(Dataset):
         """
         Truncate token_ids while preserving <|endoftext|> token at the end.
         Only truncates the content part (query/positive/negative text), keeping prefix and <|endoftext|>.
+        Note: In qwen3, <|endoftext|> is pad_token, not eos_token.
         """
-        eot_token_id = None
-        # Try to find <|endoftext|> token ID
-        if hasattr(tokenizer, "eos_token_id") and tokenizer.eos_token_id is not None:
-            eot_token_id = tokenizer.eos_token_id
-        elif hasattr(tokenizer, "convert_tokens_to_ids"):
-            try:
-                eot_token_id = tokenizer.convert_tokens_to_ids("<|endoftext|>")
-            except:
-                pass
+        eot_token_id = self.get_eot_token_id(tokenizer)
         
         if eot_token_id is None:
             # No EOT token found, use standard truncation
@@ -481,7 +491,9 @@ class RLHFDataset(Dataset):
                     self.truncation
                 )
                 input_ids = torch.tensor([truncated_ids], dtype=input_ids.dtype)
-                attention_mask = (input_ids != self.tokenizer.pad_token_id).long()
+                # Generate attention_mask: all tokens are valid (1), including <|endoftext|> at the end
+                # Note: In qwen3, <|endoftext|> is pad_token, but we want to keep it unmasked
+                attention_mask = torch.ones_like(input_ids, dtype=torch.long)
             
             if self.train_mode == "supervised":
 
@@ -515,7 +527,8 @@ class RLHFDataset(Dataset):
                         self.truncation
                     )
                     query_input_ids = torch.tensor([truncated_query_ids], dtype=query_input_ids.dtype)
-                    query_attention_mask = (query_input_ids != self.tokenizer.pad_token_id).long()
+                    # Generate attention_mask: all tokens are valid (1), including <|endoftext|> at the end
+                    query_attention_mask = torch.ones_like(query_input_ids, dtype=torch.long)
                 
                 if negative_doc_input_ids.shape[1] > self.max_prompt_length:
                     truncated_neg_ids = self.truncate_with_eot_preserved(
@@ -525,7 +538,8 @@ class RLHFDataset(Dataset):
                         self.truncation
                     )
                     negative_doc_input_ids = torch.tensor([truncated_neg_ids], dtype=negative_doc_input_ids.dtype)
-                    negative_doc_attention_mask = (negative_doc_input_ids != self.tokenizer.pad_token_id).long()
+                    # Generate attention_mask: all tokens are valid (1), including <|endoftext|> at the end
+                    negative_doc_attention_mask = torch.ones_like(negative_doc_input_ids, dtype=torch.long)
             else:
                 query_input_ids = None
                 query_attention_mask = None
