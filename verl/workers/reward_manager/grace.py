@@ -120,19 +120,23 @@ class HiddenRewardManager:
             return 0
 
         print("Calculating system prompt token length for pooling mask...")
-        print(f"Using next token prediction format: PROMPT2 + '\\n' + text + '\\n' + '<|endoftext|>'")
+        print(f"Prompt format: PROMPT2 + '\\n' + text + '\\n' + '<|endoftext|>'")
+        print(f"System prompt to mask: PROMPT2 + '\\n' (only this part will be excluded from pooling)")
 
         try:
             # New format: PROMPT2 + "\n" + text + "\n" + "<|endoftext|>"
-            # System prompt is PROMPT2 + "\n"
-            # Method 1: Direct calculation (more reliable)
+            # We only need to mask: PROMPT2 + "\n"
+            # text + "\n" + "<|endoftext|>" should participate in pooling
+            
+            # Direct calculation: tokenize PROMPT2 + "\n" only
             system_prompt_str = f"{self.custom_prompt}\n"
             system_prompt_tokens = self.tokenizer.encode(
                 system_prompt_str, add_special_tokens=False
             )
             direct_length = len(system_prompt_tokens)
             
-            # Method 2: Find by searching for user content (for verification)
+            # Verification: Build full prompt and find where user content starts
+            # This should be right after PROMPT2 + "\n"
             dummy_user_content = "some_unique_string_for_testing_user_content"
             full_prompt_str = f"{self.custom_prompt}\n{dummy_user_content}\n<|endoftext|>"
             full_tokens = self.tokenizer.encode(
@@ -146,25 +150,26 @@ class HiddenRewardManager:
             )
             
             if user_content_start_index != -1 and user_content_start_index == direct_length:
-                # Both methods agree
+                # Both methods agree - perfect!
                 self._system_prompt_token_length_val = direct_length
                 print(
-                    f"✓ System prompt prefix length determined: {self._system_prompt_token_length_val} tokens. "
-                    "These will be excluded from pooling."
+                    f"✓ System prompt (PROMPT2 + '\\n') length: {self._system_prompt_token_length_val} tokens. "
+                    "This part will be excluded from pooling."
                 )
             elif user_content_start_index != -1:
-                # Methods disagree, use the search result (more accurate)
+                # Methods disagree - use search result as it's more accurate
+                # This might happen if tokenization of "\n" behaves differently in context
                 self._system_prompt_token_length_val = user_content_start_index
                 print(
-                    f"⚠ System prompt length mismatch: direct={direct_length}, search={user_content_start_index}. "
+                    f"⚠ Length mismatch: direct={direct_length}, search={user_content_start_index}. "
                     f"Using search result: {self._system_prompt_token_length_val} tokens."
                 )
             else:
-                # Fallback to direct calculation
+                # Fallback to direct calculation if search fails
                 self._system_prompt_token_length_val = direct_length
                 print(
-                    f"✓ System prompt prefix length determined (fallback): {self._system_prompt_token_length_val} tokens. "
-                    "These will be excluded from pooling."
+                    f"✓ System prompt (PROMPT2 + '\\n') length (fallback): {self._system_prompt_token_length_val} tokens. "
+                    "This part will be excluded from pooling."
                 )
 
         except Exception as e:
@@ -183,6 +188,14 @@ class HiddenRewardManager:
             raise ValueError("method must be 'cosine' or 'dot_product'")
 
     def extract_mean_pooled_hidden_states_batch(self, hidden_states, attention_masks):
+        """
+        Extract mean pooled hidden states, excluding system prompt if enabled.
+        
+        Input format: PROMPT2 + "\n" + text + "\n" + "<|endoftext|>"
+        - PROMPT2: "Read and analyze the following text, then you need to provide your reasoning within <think></think> tags. Finally, generate a comprehensive understanding of this text."
+        - Only PROMPT2 + "\n" should be masked out for pooling
+        - text + "\n" + "<|endoftext|>" should participate in pooling
+        """
 
         attention_masks_float = attention_masks.float()  # [batch_size, seq_len]
 
@@ -190,6 +203,7 @@ class HiddenRewardManager:
 
         if self.exclude_system_prompt:
             system_prompt_len = self._get_system_prompt_token_length()
+            # system_prompt_len is the token length of PROMPT2 + "\n"
 
             if system_prompt_len > 0:
 
@@ -202,15 +216,29 @@ class HiddenRewardManager:
                         valid_start_pos = valid_token_indices[0].item()
                         valid_end_pos = valid_token_indices[-1].item()
 
+                        # Calculate the end position of system prompt (PROMPT2 + "\n")
                         system_prompt_end_pos = valid_start_pos + system_prompt_len
 
                         if (
                             system_prompt_end_pos <= valid_end_pos + 1
                         ):  # +1 because end_pos is inclusive
-                            # Mask out system prompt part (PROMPT2 + "\n")
-                            # Note: With left_pad=True, valid tokens are on the right side
-                            # valid_start_pos is the first valid token (start of system prompt)
+                            # Mask out only the system prompt part: PROMPT2 + "\n"
+                            # Structure: [padding] + [PROMPT2 + "\n"] + [text + "\n" + "<|endoftext|>"]
+                            # With left_pad=True, valid tokens start from valid_start_pos
+                            # valid_start_pos is the start of PROMPT2
+                            # system_prompt_end_pos is the end of PROMPT2 + "\n"
+                            # After masking, only text + "\n" + "<|endoftext|>" will participate in pooling
                             pooling_mask[k, valid_start_pos:system_prompt_end_pos] = 0
+                            
+                            # Debug: verify the mask
+                            masked_count = (pooling_mask[k] == 0).sum().item()
+                            total_valid = len(valid_token_indices)
+                            remaining_for_pooling = total_valid - system_prompt_len
+                            if k == 0:  # Only print for first item to avoid spam
+                                print(
+                                    f"  Sample 0: Masked {system_prompt_len} tokens (PROMPT2 + '\\n'), "
+                                    f"{remaining_for_pooling} tokens (text + '\\n' + '<|endoftext|>') will participate in pooling"
+                                )
                         else:
 
                             print(
